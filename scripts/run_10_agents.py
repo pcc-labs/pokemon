@@ -11,6 +11,7 @@ Usage:
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -89,9 +90,30 @@ def _extract_fitness(stdout: str) -> dict:
     return {}
 
 
+def _terminate_tree(proc: subprocess.Popen) -> None:
+    """Kill the agent's entire process group.
+
+    ``paper start claude`` spawns claude, which spawns agent.py. A plain
+    ``subprocess.run(timeout=...)`` only SIGKILLs the direct child on timeout,
+    orphaning those descendants — they keep running and paperd never sees the
+    session end, so it shows "Running" forever. Because the child was launched
+    with ``start_new_session=True`` it leads its own process group, so we can
+    signal the whole group and reap the tree.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass  # already gone, or we can't signal it
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def run_one_agent(rom_path: str, params: dict, agent_id: int, use_paper: bool) -> dict:
     label = params.get("label", f"agent_{agent_id}")
     prompt = _build_prompt(rom_path, params, label)
+    stripped = {k: v for k, v in params.items() if k != "label"}
 
     if use_paper:
         # Strip API key and base URL — paper start handles auth
@@ -103,33 +125,39 @@ def run_one_agent(rom_path: str, params: dict, agent_id: int, use_paper: bool) -
         cmd = ["claude", "--print", "--dangerously-skip-permissions", prompt]
 
     start = time.time()
+    proc = None
     try:
-        result = subprocess.run(
-            cmd, env=env, capture_output=True, text=True,
-            timeout=AGENT_TIMEOUT, cwd=str(WORKSPACE),
+        # start_new_session=True puts the child in its own process group so a
+        # timeout can kill the whole paper→claude→agent.py tree, not just the
+        # direct child (which would otherwise orphan the emulator process).
+        proc = subprocess.Popen(
+            cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, cwd=str(WORKSPACE), start_new_session=True,
         )
+        stdout, _ = proc.communicate(timeout=AGENT_TIMEOUT)
         elapsed = time.time() - start
-        fitness = _extract_fitness(result.stdout)
+        fitness = _extract_fitness(stdout)
         return {
             "agent_id": agent_id,
             "label": label,
-            "params": {k: v for k, v in params.items() if k != "label"},
+            "params": stripped,
             "fitness": fitness,
             "score": score(fitness) if fitness else -999,
             "elapsed": round(elapsed, 1),
-            "returncode": result.returncode,
+            "returncode": proc.returncode,
         }
     except subprocess.TimeoutExpired:
+        _terminate_tree(proc)
         return {
-            "agent_id": agent_id, "label": label,
-            "params": {k: v for k, v in params.items() if k != "label"},
+            "agent_id": agent_id, "label": label, "params": stripped,
             "fitness": {}, "score": -999,
             "elapsed": round(time.time() - start, 1), "error": "timeout",
         }
     except Exception as e:
+        if proc is not None:
+            _terminate_tree(proc)
         return {
-            "agent_id": agent_id, "label": label,
-            "params": {k: v for k, v in params.items() if k != "label"},
+            "agent_id": agent_id, "label": label, "params": stripped,
             "fitness": {}, "score": -999,
             "elapsed": round(time.time() - start, 1), "error": str(e),
         }
