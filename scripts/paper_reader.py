@@ -72,9 +72,11 @@ class TapeSession:
 def _paperd_base_url() -> str | None:
     """Return the paperd proxy root URL (scheme+host+port) from ANTHROPIC_BASE_URL."""
     base = os.environ.get("ANTHROPIC_BASE_URL", "")
-    if not base or "127.0.0.1" not in base:
+    if not base:
         return None
     parsed = urllib.parse.urlparse(base)
+    if parsed.hostname not in ("127.0.0.1", "::1", "localhost"):
+        return None
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
@@ -128,7 +130,7 @@ def _list_paper_sessions(base_url: str, cwd: str) -> list[dict]:
     """Fetch all sessions from the Paper API whose cwd matches."""
     sessions = []
     cursor = None
-    while True:
+    for _ in range(1000):
         qs = "?limit=100"
         if cursor:
             qs += f"&cursor={cursor}"
@@ -148,6 +150,8 @@ def _list_paper_sessions(base_url: str, cwd: str) -> list[dict]:
 
 def _parse_jsonl_entry(obj: dict) -> TapeEntry | None:
     """Convert a JSONL line object to a TapeEntry, or None if not user/assistant."""
+    if not isinstance(obj, dict):
+        return None
     etype = obj.get("type")
     if etype not in ("user", "assistant"):
         return None
@@ -258,15 +262,23 @@ class TapeReader:
         self._base_url = _paperd_base_url()
 
     def list_sessions(self) -> list[str]:
-        """Return harness_session_ids for sessions whose cwd matches, ordered by start time."""
-        if not self._base_url:
-            return []
-        try:
-            sessions = _list_paper_sessions(self._base_url, self._cwd)
-        except (urllib.error.URLError, OSError):
-            return []
-        sessions.sort(key=lambda s: s.get("started_at", ""))
-        return [s["harness_session_id"] for s in sessions if s.get("harness_session_id")]
+        """Return harness_session_ids for sessions whose cwd matches, ordered by start time.
+
+        Tries the Paper API first; falls back to scanning the local JSONL directory
+        when paperd is unavailable or ANTHROPIC_BASE_URL is not set.
+        """
+        if self._base_url:
+            try:
+                sessions = _list_paper_sessions(self._base_url, self._cwd)
+                sessions.sort(key=lambda s: s.get("started_at", ""))
+                return [s["harness_session_id"] for s in sessions if s.get("harness_session_id")]
+            except (urllib.error.URLError, OSError, json.JSONDecodeError):
+                pass
+        # Filesystem fallback: scan ~/.claude/projects/{slug}/*.jsonl sorted by mtime
+        if self._jsonl_dir.exists():
+            files = sorted(self._jsonl_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+            return [p.stem for p in files]
+        return []
 
     def read_session(self, session_id: str) -> TapeSession:
         """Read a session's transcript from its JSONL file."""

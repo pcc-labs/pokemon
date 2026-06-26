@@ -75,19 +75,15 @@ def _build_prompt(rom_path: str, params: dict, label: str) -> str:
 
 
 def _extract_fitness(stdout: str) -> dict:
-    """Find the last JSON object in Claude's stdout output."""
-    for line in reversed(stdout.strip().splitlines()):
-        line = line.strip()
-        if line.startswith("{"):
-            try:
-                return json.loads(line)
-            except json.JSONDecodeError:
-                continue
-    # Fallback: find any JSON blob containing party_size
-    m = re.search(r'(\{[^{}]*"party_size"[^{}]*\})', stdout, re.DOTALL)
+    """Find a JSON fitness object in Claude's stdout.
+
+    agent.py writes indented JSON, so we search the full output blob rather
+    than scanning line by line.
+    """
+    m = re.search(r'\{[^{}]*"party_size"[^{}]*\}', stdout, re.DOTALL)
     if m:
         try:
-            return json.loads(m.group(1))
+            return json.loads(m.group(0))
         except json.JSONDecodeError:
             pass
     return {}
@@ -97,15 +93,14 @@ def run_one_agent(rom_path: str, params: dict, agent_id: int, use_paper: bool) -
     label = params.get("label", f"agent_{agent_id}")
     prompt = _build_prompt(rom_path, params, label)
 
-    # Strip proxy env — paper start handles auth (mirrors sweeper's claude.go)
-    env = {k: v for k, v in os.environ.items()
-           if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL")}
-
-    cmd = (
-        ["paper", "start", "claude", "--", "--print", "--dangerously-skip-permissions", prompt]
-        if use_paper
-        else ["claude", "--print", "--dangerously-skip-permissions", prompt]
-    )
+    if use_paper:
+        # Strip API key and base URL — paper start handles auth
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL")}
+        cmd = ["paper", "start", "claude", "--", "--print", "--dangerously-skip-permissions", prompt]
+    else:
+        env = os.environ.copy()
+        cmd = ["claude", "--print", "--dangerously-skip-permissions", prompt]
 
     start = time.time()
     try:

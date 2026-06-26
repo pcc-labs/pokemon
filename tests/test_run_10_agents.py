@@ -80,17 +80,15 @@ class TestRunOneAgent:
     def test_success(self):
         fitness = self._make_fitness()
 
-        def mock_run(cmd, env=None, capture_output=False, text=False, timeout=None):
-            output_path = cmd[cmd.index("--output-json") + 1]
-            Path(output_path).write_text(json.dumps(fitness))
-            return MagicMock(returncode=0)
+        def mock_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=json.dumps(fitness))
 
         params = {"stuck_threshold": 8, "door_cooldown": 4,
                   "waypoint_skip_distance": 3, "axis_preference_map_0": "y",
                   "label": "test_label"}
 
         with patch("run_10_agents.subprocess.run", side_effect=mock_run):
-            result = run_one_agent("/fake/rom.gb", params, 0)
+            result = run_one_agent("/fake/rom.gb", params, 0, use_paper=False)
 
         assert result["agent_id"] == 0
         assert result["label"] == "test_label"
@@ -104,16 +102,14 @@ class TestRunOneAgent:
     def test_label_defaults_to_agent_id(self):
         fitness = self._make_fitness()
 
-        def mock_run(cmd, env=None, capture_output=False, text=False, timeout=None):
-            output_path = cmd[cmd.index("--output-json") + 1]
-            Path(output_path).write_text(json.dumps(fitness))
-            return MagicMock(returncode=0)
+        def mock_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=json.dumps(fitness))
 
         params = {"stuck_threshold": 8, "door_cooldown": 4,
                   "waypoint_skip_distance": 3, "axis_preference_map_0": "y"}
 
         with patch("run_10_agents.subprocess.run", side_effect=mock_run):
-            result = run_one_agent("/fake/rom.gb", params, 7)
+            result = run_one_agent("/fake/rom.gb", params, 7, use_paper=False)
 
         assert result["label"] == "agent_7"
 
@@ -122,7 +118,7 @@ class TestRunOneAgent:
 
         with patch("run_10_agents.subprocess.run",
                    side_effect=sp.TimeoutExpired("cmd", 300)):
-            result = run_one_agent("/fake/rom.gb", params, 1)
+            result = run_one_agent("/fake/rom.gb", params, 1, use_paper=False)
 
         assert result["score"] == -999
         assert result["fitness"] == {}
@@ -133,7 +129,7 @@ class TestRunOneAgent:
 
         with patch("run_10_agents.subprocess.run",
                    side_effect=FileNotFoundError("no python")):
-            result = run_one_agent("/fake/rom.gb", params, 2)
+            result = run_one_agent("/fake/rom.gb", params, 2, use_paper=False)
 
         assert result["score"] == -999
         assert "error" in result
@@ -141,52 +137,52 @@ class TestRunOneAgent:
     def test_invalid_json_returns_error(self):
         params = {"stuck_threshold": 8, "label": "bad_json"}
 
-        def mock_run(cmd, env=None, capture_output=False, text=False, timeout=None):
-            output_path = cmd[cmd.index("--output-json") + 1]
-            Path(output_path).write_text("not json")
-            return MagicMock(returncode=0)
+        def mock_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout="not json at all")
 
         with patch("run_10_agents.subprocess.run", side_effect=mock_run):
-            result = run_one_agent("/fake/rom.gb", params, 3)
+            result = run_one_agent("/fake/rom.gb", params, 3, use_paper=False)
 
+        # _extract_fitness returns {} when no party_size JSON found → score -999
         assert result["score"] == -999
-        assert "error" in result
 
-    def test_params_passed_as_env(self):
+    def test_params_embedded_in_prompt(self):
         fitness = self._make_fitness()
-        captured_env = {}
+        captured_cmd = []
 
-        def mock_run(cmd, env=None, capture_output=False, text=False, timeout=None):
-            captured_env.update(env or {})
-            output_path = cmd[cmd.index("--output-json") + 1]
-            Path(output_path).write_text(json.dumps(fitness))
-            return MagicMock(returncode=0)
+        def mock_run(cmd, **kwargs):
+            captured_cmd.extend(cmd)
+            return MagicMock(returncode=0, stdout=json.dumps(fitness))
 
         params = {"stuck_threshold": 10, "door_cooldown": 6, "label": "env_test"}
 
         with patch("run_10_agents.subprocess.run", side_effect=mock_run):
-            run_one_agent("/fake/rom.gb", params, 0)
+            run_one_agent("/fake/rom.gb", params, 0, use_paper=False)
 
-        assert "EVOLVE_PARAMS" in captured_env
-        parsed = json.loads(captured_env["EVOLVE_PARAMS"])
-        assert parsed == {"stuck_threshold": 10, "door_cooldown": 6}
-        assert "label" not in parsed
+        # EVOLVE_PARAMS is embedded in the prompt string (last cmd arg)
+        prompt = captured_cmd[-1]
+        assert "EVOLVE_PARAMS" in prompt
+        assert '"stuck_threshold": 10' in prompt
+        assert "label" not in json.loads(
+            prompt.split("EVOLVE_PARAMS='")[1].split("'")[0]
+        )
 
-    def test_cleanup_unlink_oserror_ignored(self):
+    def test_non_paper_keeps_api_key_in_env(self):
         fitness = self._make_fitness()
+        captured_env = {}
 
-        def mock_run(cmd, env=None, capture_output=False, text=False, timeout=None):
-            output_path = cmd[cmd.index("--output-json") + 1]
-            Path(output_path).write_text(json.dumps(fitness))
-            return MagicMock(returncode=0)
+        def mock_run(cmd, env=None, **kwargs):
+            if env:
+                captured_env.update(env)
+            return MagicMock(returncode=0, stdout=json.dumps(fitness))
 
-        params = {"stuck_threshold": 8, "label": "cleanup_test"}
+        params = {"stuck_threshold": 8, "label": "env_key_test"}
 
         with patch("run_10_agents.subprocess.run", side_effect=mock_run), \
-             patch("run_10_agents.os.unlink", side_effect=OSError("perm")):
-            result = run_one_agent("/fake/rom.gb", params, 0)
+             patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            run_one_agent("/fake/rom.gb", params, 0, use_paper=False)
 
-        assert result["fitness"] == fitness
+        assert captured_env.get("ANTHROPIC_API_KEY") == "test-key"
 
 
 # ── main() ────────────────────────────────────────────────────────────
@@ -222,7 +218,7 @@ class TestMain:
             "returncode": 0,
         }
 
-        def mock_run_one_agent(rom_path, params, agent_id):
+        def mock_run_one_agent(rom_path, params, agent_id, use_paper):
             return dict(fake_result, agent_id=agent_id,
                         label=params.get("label", f"agent_{agent_id}"))
 
@@ -231,8 +227,9 @@ class TestMain:
 
         with patch("sys.argv", ["run_10_agents.py", str(rom)]), \
              patch("run_10_agents.run_one_agent", side_effect=mock_run_one_agent), \
-             patch("run_10_agents.ProcessPoolExecutor", ThreadPoolExecutor), \
-             patch.object(mod, "SCRIPT_DIR", scripts_dir):
+             patch("run_10_agents.ThreadPoolExecutor", ThreadPoolExecutor), \
+             patch.object(mod, "SCRIPT_DIR", scripts_dir), \
+             patch.object(mod, "WORKSPACE", tmp_path):
             main()
 
         output = capsys.readouterr().out
@@ -248,7 +245,7 @@ class TestMain:
         rom = tmp_path / "test.gb"
         rom.write_bytes(b"\x00" * 100)
 
-        def mock_run_one_agent(rom_path, params, agent_id):
+        def mock_run_one_agent(rom_path, params, agent_id, use_paper):
             return {
                 "agent_id": agent_id,
                 "label": params.get("label", f"agent_{agent_id}"),
@@ -264,12 +261,13 @@ class TestMain:
 
         with patch("sys.argv", ["run_10_agents.py", str(rom)]), \
              patch("run_10_agents.run_one_agent", side_effect=mock_run_one_agent), \
-             patch("run_10_agents.ProcessPoolExecutor", ThreadPoolExecutor), \
-             patch.object(mod, "SCRIPT_DIR", scripts_dir):
+             patch("run_10_agents.ThreadPoolExecutor", ThreadPoolExecutor), \
+             patch.object(mod, "SCRIPT_DIR", scripts_dir), \
+             patch.object(mod, "WORKSPACE", tmp_path):
             main()
 
         output = capsys.readouterr().out
-        assert "[FAIL]" in output
+        assert "[FAIL(" in output
 
 
 # ── __main__ guard ────────────────────────────────────────────────────
@@ -286,7 +284,7 @@ class TestMainGuard:
             "elapsed": 0.1, "returncode": 0,
         }
 
-        def mock_run_one_agent(rom_path, params, agent_id):
+        def mock_run_one_agent(rom_path, params, agent_id, use_paper):
             return dict(fake_result, agent_id=agent_id,
                         label=params.get("label", f"agent_{agent_id}"))
 
@@ -295,8 +293,9 @@ class TestMainGuard:
 
         with patch("sys.argv", ["run_10_agents.py", str(rom)]), \
              patch("run_10_agents.run_one_agent", side_effect=mock_run_one_agent), \
-             patch("run_10_agents.ProcessPoolExecutor", ThreadPoolExecutor), \
-             patch.object(mod, "SCRIPT_DIR", scripts_dir):
+             patch("run_10_agents.ThreadPoolExecutor", ThreadPoolExecutor), \
+             patch.object(mod, "SCRIPT_DIR", scripts_dir), \
+             patch.object(mod, "WORKSPACE", tmp_path):
             runpy.run_path(
                 str(Path(mod.__file__).resolve()),
                 run_name="__main__",
