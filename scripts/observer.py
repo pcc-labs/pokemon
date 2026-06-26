@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tape_reader import TapeReader, TapeEntry, TapeSession
+from paper_reader import TapeReader, TapeEntry, TapeSession
 
 
 @dataclass
