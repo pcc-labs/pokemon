@@ -1,7 +1,7 @@
-"""Observational memory: distills Tapes sessions into prioritized observations.
+"""Observational memory: distills Paper sessions into prioritized observations.
 
 Uses heuristic pattern matching (no LLM calls) to extract noteworthy events
-from Tapes conversation data and write them to memory files.
+from recorded Paper conversation data and write them to memory files.
 """
 
 import json
@@ -36,7 +36,7 @@ _POSSIBLE_KEYWORDS = re.compile(
 
 
 class Observer:
-    """Extracts observations from Tapes sessions using heuristics."""
+    """Extracts observations from Paper sessions using heuristics."""
 
     def __init__(self, db_path: str, memory_dir: str):
         self.db_path = Path(db_path)
@@ -264,8 +264,8 @@ def observe_session_inline(db_path: str, session_id: str | None = None) -> list[
 def _first_user_message(session: TapeSession) -> str:
     """Extract the first user message text from a session.
 
-    Skips system framework noise (e.g. <system-reminder> tags) that Tapes
-    stores as user-role nodes.
+    Skips system framework noise (e.g. <system-reminder> tags) that the
+    harness stores as user-role entries.
     """
     for entry in session.entries:
         if entry.type == "user" and entry.text_content:

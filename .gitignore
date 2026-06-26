@@ -9,8 +9,8 @@ rom/
 # Screenshot output
 frames/
 
-# Tapes telemetry (SQLite DB + local config)
-.tapes/
+# Observer memory output (per-run observations + watermark)
+pokedex/memory/
 
 # Plans (ephemeral working artifacts, never commit)
 docs/plans/
