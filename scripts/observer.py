@@ -209,14 +209,32 @@ class Observer:
             f.write("\n".join(lines) + "\n")
 
     def load_state(self) -> dict:
-        """Load observer state from JSON file."""
-        if self.state_path.exists():
-            return json.loads(self.state_path.read_text())
-        return {}
+        """Load observer state from JSON file.
+
+        If the stored ``reader`` identity differs from the current reader's
+        READER_ID, the watermark was written against a different session-ID
+        namespace (e.g. the old SQLite tape_reader's SHA hashes vs. Paper's
+        harness UUIDs). Reprocessing under the new IDs would duplicate every
+        observation, so we drop the stale watermark instead.
+        """
+        if not self.state_path.exists():
+            return {}
+        state = json.loads(self.state_path.read_text())
+        expected = getattr(self.reader, "READER_ID", None)
+        if expected is not None and state.get("reader") != expected:
+            print(
+                f"[observer] reader changed "
+                f"({state.get('reader')!r} -> {expected!r}); resetting watermark"
+            )
+            return {"reader": expected}
+        return state
 
     def save_state(self, state: dict) -> None:
-        """Save observer state to JSON file."""
+        """Save observer state to JSON file, stamping the current reader identity."""
         self.memory_dir.mkdir(parents=True, exist_ok=True)
+        expected = getattr(self.reader, "READER_ID", None)
+        if expected is not None:
+            state = {**state, "reader": expected}
         self.state_path.write_text(json.dumps(state, indent=2) + "\n")
 
 

@@ -21,6 +21,8 @@ from observer import (
 class FakeTapeReader:
     """Minimal TapeReader stand-in that returns controlled sessions."""
 
+    READER_ID = "fake-v1"
+
     def __init__(self, sessions: dict[str, TapeSession] | None = None):
         self._sessions = sessions or {}
 
@@ -326,8 +328,31 @@ class TestLoadState:
     def test_reads_existing_state(self, tmp_path):
         obs = _make_observer(tmp_path)
         obs.memory_dir.mkdir(parents=True, exist_ok=True)
-        obs.state_path.write_text(json.dumps({"processed_sessions": ["a", "b"]}))
+        obs.state_path.write_text(
+            json.dumps({"reader": "fake-v1", "processed_sessions": ["a", "b"]})
+        )
         assert obs.load_state()["processed_sessions"] == ["a", "b"]
+
+    def test_resets_on_reader_mismatch(self, tmp_path, capsys):
+        obs = _make_observer(tmp_path)
+        obs.memory_dir.mkdir(parents=True, exist_ok=True)
+        # State written by a different reader (e.g. old SQLite tape_reader)
+        obs.state_path.write_text(
+            json.dumps({"reader": "sqlite-sha", "processed_sessions": ["sha1", "sha2"]})
+        )
+        state = obs.load_state()
+        assert state.get("processed_sessions", []) == []
+        assert state["reader"] == "fake-v1"
+        assert "resetting watermark" in capsys.readouterr().out
+
+    def test_resets_when_reader_key_absent(self, tmp_path):
+        obs = _make_observer(tmp_path)
+        obs.memory_dir.mkdir(parents=True, exist_ok=True)
+        # Legacy state with no reader stamp at all
+        obs.state_path.write_text(json.dumps({"processed_sessions": ["old1"]}))
+        state = obs.load_state()
+        assert state.get("processed_sessions", []) == []
+        assert state["reader"] == "fake-v1"
 
 
 class TestSaveState:
@@ -336,6 +361,12 @@ class TestSaveState:
         obs.save_state({"processed_sessions": ["x"]})
         data = json.loads(obs.state_path.read_text())
         assert data["processed_sessions"] == ["x"]
+
+    def test_stamps_reader_id(self, tmp_path):
+        obs = _make_observer(tmp_path)
+        obs.save_state({"processed_sessions": ["x"]})
+        data = json.loads(obs.state_path.read_text())
+        assert data["reader"] == "fake-v1"
 
     def test_creates_dir(self, tmp_path):
         obs = _make_observer(tmp_path)

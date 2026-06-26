@@ -256,6 +256,12 @@ class TapeReader:
     The argument is ignored; port is read from ANTHROPIC_BASE_URL instead.
     """
 
+    # Stable identifier for the session-ID namespace this reader produces.
+    # Stored in observer_state.json so the observer can detect when the reader
+    # changed (e.g. the old SQLite tape_reader used SHA hashes; this one uses
+    # Paper harness UUIDs) and reset its watermark instead of reprocessing.
+    READER_ID = "paper-jsonl-v1"
+
     def __init__(self, db_path: str = ""):
         self._cwd = str(Path.cwd())
         self._jsonl_dir = _jsonl_dir()
